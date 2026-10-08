@@ -11,4 +11,5 @@ add_executable(os main.cpp
         pcb_queue.cpp
         memory.cpp
         process.cpp
+        bitmap.h
 )
