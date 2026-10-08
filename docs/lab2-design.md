@@ -66,3 +66,62 @@ memStart、memSize 将在分页管理接入时删除。
 当前尚未接入分页分配与访问，新增字段尚不参与旧程序运行。
 
 本地验证结果：正常
+
+## MemoryManager 目标接口：尚未接入运行代码
+```
+#ifndef OS_MEMORY_H
+#define OS_MEMORY_H
+
+#include "bitmap.h"
+#include "pcb.h"
+
+class MemoryManager {
+private:
+    int pageSizeBytes;
+    int frameCount;
+    int swapBlockCount;
+    int offsetBits;
+
+    Bitmap memoryBitmap;
+    Bitmap swapBitmap;
+
+    // 根据逻辑字节数计算所需页数
+    int calculatePageCount(int sizeBytes) const;
+
+    // 处理合法页面的缺页，按 FIFO 完成局部置换
+    void handlePageFault(PCB& pcb, int pageNo);
+
+public:
+    // 三个参数的单位均为字节
+    MemoryManager(int memorySizeBytes = 64 * 1024,
+                  int swapSizeBytes = 128 * 1024,
+                  int pageSizeBytes = 1024);
+
+    // residentPages 为 -1 时，采用默认驻留页数
+    bool allocate(PCB& pcb, int sizeBytes, int residentPages = -1);
+
+    // 释放该进程的内存块和置换块，但不删除 PCB
+    bool release(PCB& pcb);
+
+    // 完成一次地址访问，包含必要的缺页处理
+    bool access(PCB& pcb,
+                int logicalAddress,
+                bool isWrite,
+                int& physicalAddress);
+
+    // 返回空闲空间的字节数
+    int getFreeSize() const;
+    int getFreeSwapSize() const;
+
+    // 显示两张位示图及空闲空间情况
+    void show() const;
+
+    // 显示指定进程的页表及 FIFO 顺序
+    void showPageTable(const PCB& pcb) const;
+
+    // 显示指定进程的访问次数、缺页次数、置换次数和缺页率
+    void showStatistics(const PCB& pcb) const;
+};
+
+#endif //OS_MEMORY_H
+```
