@@ -12,4 +12,5 @@ add_executable(os main.cpp
         memory.cpp
         process.cpp
         bitmap.h
+        bitmap.cpp
 )
