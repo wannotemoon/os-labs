@@ -1,0 +1,14 @@
+# IDE configuration
+/.idea/
+
+# Build directories
+/cmake-build-*/
+/build/
+/out/
+
+# Compiled and debug files
+*.exe
+*.o
+*.obj
+*.pdb
+*.ilk
