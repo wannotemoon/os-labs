@@ -125,3 +125,90 @@ public:
 
 #endif //OS_MEMORY_H
 ```
+
+## ProcessManager 目标接口：尚未接入运行代码
+
+```
+#ifndef OS_PROCESS_H
+#define OS_PROCESS_H
+
+#include <string>
+using namespace std;
+
+#include "pcb.h"
+#include "pcb_queue.h"
+#include "memory.h"
+
+class ProcessManager {
+private:
+    PCB* running;
+    PCBQueue ready;
+    PCBQueue blocked;
+
+    MemoryManager memory;
+
+    int nextPid;
+
+    void dispatch();
+    void clearProcesses();
+
+    // 根据进程编号查找，只查看，不移除进程
+    const PCB* findProcess(int pid) const;
+
+public:
+    // 三个容量参数统一使用字节
+    ProcessManager(int memorySizeBytes = 64 * 1024,
+                   int swapSizeBytes = 128 * 1024,
+                   int pageSizeBytes = 1024);
+
+    ~ProcessManager();
+
+    // 创建进程，并为其分配分页存储资源
+    bool createProcess(const string& name,
+                       int sizeBytes,
+                       int residentPages = -1);
+
+    // 原来的进程控制操作
+    bool timeOut();
+    bool blockProcess();
+    bool wakeProcess();
+    bool terminateProcess();
+
+    // 访问当前运行进程的逻辑地址
+    bool accessCurrent(int logicalAddress,
+                       bool isWrite,
+                       int& physicalAddress);
+
+    // 原来的状态查看入口
+    void showProcess() const;
+    void showMemory() const;
+
+    // 根据进程编号查看分页信息
+    bool showPageTable(int pid) const;
+    bool showStatistics(int pid) const;
+};
+
+#endif //OS_PROCESS_H
+```
+
+## ProcessManager 接入约定
+
+数据成员保持不变，不重复保存页表、FIFO 队列和访问统计。
+
+createProcess 先建立临时 PCB，再调用 MemoryManager 分配资源。
+分配成功后加入就绪队列并推进 nextPid；失败清理临时 PCB。
+默认驻留页数的计算由 MemoryManager 负责。
+
+accessCurrent 只选择当前运行进程并转交访问请求。
+缺页在本次存储访问内部同步处理，不触发进程状态切换。
+
+findProcess 根据 PID 查找运行、就绪和阻塞中的进程。
+查找与显示不得改变队列、页表、FIFO 顺序或访问统计。
+
+终止与退出清理先释放存储资源，再删除 PCB。
+时间片到、阻塞、唤醒不重置分页状态。
+
+主菜单在接入分页时统一使用字节单位，并新增地址访问、
+按 PID 查看页表和访问统计的入口。
+
+当前只完成接口设计，尚未修改 process.h、process.cpp、main.cpp。
