@@ -1,38 +1,38 @@
-//
-// Created by 28794 on 2026/9/3.
-//
-
 #ifndef OS_MEMORY_H
 #define OS_MEMORY_H
 
-struct MemoryBlock {
-    int start;
-    int length;
-
-    int pid; //-1:none
-
-    MemoryBlock* prev;
-    MemoryBlock* next;
-};
+#include "bitmap.h"
+#include "pcb.h"
 
 class MemoryManager {
 private:
-    int totalSize;
-    MemoryBlock* head;
+    int pageSizeBytes;
+    int frameCount;
+    int swapBlockCount;
+    int offsetBits;
 
-    static const int MIN = 2;
-    void merge(MemoryBlock* block);
+    Bitmap memoryBitmap;
+    Bitmap swapBitmap;
+
+    int calculatePageCount(int sizeBytes) const;
+    void handlePageFault(PCB& pcb,int pageNo);
+
 public:
-    MemoryManager(int size);
-    ~MemoryManager();
+    MemoryManager(int memorySizeBytes=64*1024,
+                  int swapSizeBytes=128*1024,
+                  int pageSizeBytes=1024);
 
-    bool allocate(int pid,int requestSize,int& start,int& actualSize);
+    bool allocate(PCB& pcb,int sizeBytes,int residentPages=-1);
+    bool release(PCB& pcb);
 
-    bool release(int pid);
+    bool access(PCB& pcb,int logicalAddress,bool isWrite,int& physicalAddress);
 
     int getFreeSize() const;
+    int getFreeSwapSize() const;
 
     void show() const;
+    void showPageTable(const PCB& pcb) const;
+    void showStatistics(const PCB& pcb) const;
 };
 
-#endif //OS_MEMORY_H
+#endif

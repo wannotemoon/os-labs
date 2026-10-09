@@ -1,5 +1,6 @@
 #include "bitmap.h"
 
+#include <iomanip>
 #include <iostream>
 #include <stdexcept>
 using namespace std;
@@ -66,7 +67,7 @@ bool Bitmap::findFreeBlocks(int count, vector<int>& blocks) const {
 void Bitmap::show() const {
     cout << "Blocks: " << blockCount << endl;
     for (int no = 0; no < blockCount; no++) {
-        cout << no << ":" << (isUsed(no) ? 1 : 0) << " ";
+        cout <<setw(4)<< no << ":" << (isUsed(no) ? 1 : 0) << " ";
         if (no % 8 == 7 || no == blockCount - 1) {
             cout << endl;
         }
