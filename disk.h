@@ -21,7 +21,8 @@ private:
     fstream diskFile;
     string lastError;
 
-    // 仅由openDisk在确认目标不存在后调用，建立FAT和数据区。
+    // 仅为不存在的目标创建新虚盘，初始化FAT和全零数据区；再次确认目标不存在。
+    // 成功保留成员流打开；失败关闭本次打开的流，保留原fat和已有文件。
     bool createDisk(const string& path);
 
     // 从文件偏移0读取blockCount*2字节，按小端解码并校验。
@@ -38,12 +39,16 @@ public:
     explicit DiskManager(int blockCount=DEFAULT_BLOCK_COUNT);
 
     // 不存在则创建，存在则校验并打开；不覆盖已有的非法虚盘。
+    // 已打开时拒绝重复调用；成功后流可读写，fat已就绪。
+    // 校验完整文件长度，再调用loadFat；失败关闭本次打开的流并保留原fat。
     bool openDisk(const string& path);
 
-    // 成功读取完整1024字节；失败清空buffer。块号范围为[0,blockCount)。
+    // 块读写只访问数据区，不分配/释放块、不修改FAT；失败不关闭当前虚盘。
+    // 成功读取完整1024字节；任何失败均清空buffer。块号范围为[0,blockCount)。
     bool readBlock(int blockNo,vector<char>& buffer);
 
-    // buffer必须恰好1024字节；只有写入并同步成功才返回true。
+    // 块号范围同上，buffer必须恰好1024字节且保持不变；写入并flush成功才返回true。
+    // 参数错误不写文件；实际I/O中途失败可能已部分写入，不保证回滚。
     bool writeBlock(int blockNo,const vector<char>& buffer);
 
     // 从整文件偏移开始，只读显示原始字节；到文件末尾时缩短显示长度。

@@ -6,6 +6,8 @@
 #include <iostream>
 #include <stdexcept>
 #include <fstream>
+#include <filesystem>
+#include <system_error>
 // 当前没有输入输出操作，<iostream>暂时用不到；不要依赖其他头文件间接提供异常类型。
 using namespace std;
 
@@ -207,4 +209,329 @@ bool DiskManager::loadFat() {
         return true;
     }
 
+}
+
+/* [第三轮：创建与打开完整虚盘]
+ * 本轮原计划由你实现；按你这次的要求，由助手补全这两个方法，供你对照阅读。
+ * saveFat/loadFat已经负责FAT字节转换，这里复用它们，不再写一套编码逻辑。
+ *
+ * [先看布局]
+ * FAT字节数 = blockCount * 2。
+ * 数据区字节数 = blockCount * BLOCK_SIZE。
+ * 文件总字节数 = 上面两项相加。
+ * 8块时是16 + 8192 = 8208字节；默认64块时是128 + 65536 = 65664字节。
+ * 新磁盘的FAT只有根目录块为LAST_BLOCK，其他表项均为EMPTY_BLOCK；数据区全部为0。
+ * 因此根目录块已经分配，但内部目录项全为空，不需要在这里写入test或a.c。
+ *
+ * [会用到的接口]
+ * 本文件已包含<filesystem>和<system_error>，用于路径检查与错误码。
+ * filesystem::exists(path, ec)区分路径是否存在；ec非空表示查询出错。
+ * 注意：查询出错不能当作“文件不存在”，更不能因此尝试覆盖创建。
+ * filesystem::is_regular_file(path, ec)用于拒绝把目录等对象当成虚盘文件。
+ * 对每次查询都检查ec，错误时设置lastError并返回false。
+ *
+ * [文件流打开模式]
+ * ios::in：读取；ios::out：写入；ios::binary：原始字节；ios::trunc：清空原文件。
+ * 用|组合这些标志。打开已有虚盘只使用in、out、binary，不能带trunc或app。
+ * 新建分支确认路径不存在后，才使用包含trunc的创建模式。
+ * 使用成员diskFile.open(...)，不要打开另一个局部流，却让saveFat操作仍未打开的成员流。
+ *
+ * [本轮调用规则]
+ * openDisk是对外入口；确认不存在后才调用createDisk。
+ * 同一个对象已经打开虚盘时，先返回false并说明原因，保留原流和fat，不自动切换文件。
+ * 成功后保留成员流打开，后续块读写复用它；不要成功后马上close。
+ * 失败则关闭本次打开的流，留下lastError；下次重试前清除旧流状态。
+ * 已有文件内容始终保留；新文件写入中途失败可能留下未完成文件，不自动删除或覆盖重试。
+ */
+
+/* [任务1] bool DiskManager::createDisk(const string& path)
+ * [目标] 仅创建一个全新的完整虚盘，成功后可继续用成员流读写。
+ *
+ * [建议步骤]
+ * 1. 拒绝空路径、成员流已打开、路径已存在或存在性查询出错的情况。
+ *    即便调用方已检查过，创建前仍再确认一次；已有普通文件也不能清空重建。
+ * 2. 为需要修改的成员fat保留一份原缓存，以便后续I/O失败时恢复。
+ * 3. 以读写、二进制、创建模式打开成员diskFile，检查打开结果。
+ * 4. 准备“文件总字节数”个值为0的char元素，写入完整文件并flush，逐步检查流状态。
+ *    这里可以一次准备全文件大小的vector<char>，本实验最大约1MB。
+ *    注意0字节是字符'\0'或数值0，不是字符'0'；后者的字节值是0x30。
+ * 5. 将成员fat重置为blockCount个EMPTY_BLOCK，再保留ROOT_BLOCK为LAST_BLOCK。
+ *    调用已有saveFat，把这张新表写回文件开头；不能沿用旧虚盘缓存的块分配状态。
+ * 6. 全部成功才清空lastError、返回true；成员流保持打开。
+ *
+ * [失败处理]
+ * - 打开后发生写入、flush或saveFat失败：恢复原fat，关闭本次打开的成员流，保留失败原因。
+ * - 先检查全零写入成功，再调用saveFat；后者会clear旧状态，不能让它掩盖之前的写入失败。
+ * - 恢复内存fat不代表新文件的部分写入已经撤销；不自动删除留下的未完成文件。
+ * - 这里的fat是文件系统FAT，不使用实验二的页框、页表或置换位示图。
+ */
+bool DiskManager::createDisk(const string &path) {
+    if (path.empty()) {
+        lastError="path must not be empty";
+        return false;
+    }
+    if (diskFile.is_open()) {
+        lastError="disk already open";
+        return false;
+    }
+    error_code ec;
+    bool exists=filesystem::exists(path,ec);
+    if (ec) {
+        lastError="path query fails: "+ec.message();
+        return false;
+    }
+    if (exists) {
+        lastError="file exists";
+        return false;
+    }
+    vector<uint16_t> oldFat=fat;
+    int totalBytes=blockCount*2+blockCount*BLOCK_SIZE;
+    vector<char> zeros(totalBytes,0);
+    diskFile.clear(); // 清除上次失败留下的状态，再尝试打开。
+    diskFile.open(path,ios::in|ios::out|ios::binary|ios::trunc);
+    if (!diskFile) {
+        lastError="cannot create disk file";
+        return false;
+    }
+
+    diskFile.write(zeros.data(),totalBytes);
+    if (!diskFile) {
+        lastError="cannot initialize disk file";
+        diskFile.close();
+        return false;
+    }
+    diskFile.flush();
+    if (!diskFile) {
+        lastError="cannot flush disk file";
+        diskFile.close();
+        return false;
+    }
+
+    fat.assign(blockCount,EMPTY_BLOCK);
+    fat[ROOT_BLOCK]=LAST_BLOCK;
+    if (!saveFat()) {
+        fat.swap(oldFat);
+        diskFile.close();
+        return false;
+    }
+    lastError="";
+    return true;
+}
+
+/* [任务2] bool DiskManager::openDisk(const string& path)
+ * [目标] 不存在时创建，存在时原样加载；只接受符合当前块数配置的完整虚盘。
+ *
+ * [建议步骤]
+ * 1. 拒绝空路径、成员流已打开；检查路径是否存在，查询出错应报告失败。
+ * 2. 路径确实不存在时，转交createDisk，并返回其结果。
+ * 3. 路径存在时确认它是普通文件；以in、out、binary打开成员流，检查结果。
+ *    此分支绝不带trunc，打开失败也不能回退到“创建新文件”。
+ * 4. 用seekg(0, ios::end)定位读位置到文件末尾，再用tellg()取得字节位置。
+ *    检查定位和查询是否成功；此时的末尾位置就是文件长度。
+ *    文件长度必须恰好等于blockCount*2 + blockCount*BLOCK_SIZE。
+ * 5. 长度正确后调用loadFat；它会自己定位回开头，并只在成功时更新成员fat。
+ *    如果返回false，关闭本次打开的流并保留它的错误原因，不清空或重写这个文件。
+ * 6. 加载成功后清空lastError，返回true；成员流保持打开。
+ *
+ * [几个容易混淆的边界]
+ * - loadFat可以只读一段FAT，但openDisk必须拒绝缺少数据区的文件，两者职责不同。
+ * - 比预期短或长都应拒绝；不要修改构造时的blockCount去迁就已有文件长度。
+ * - 文件长度正确却FAT非法，也要拒绝，不能因加载失败而格式化重建。
+ * - 成功加载后应保留磁盘中已有的分配情况，不要又把fat全重置为空闲。
+ * - 本轮仅完成文件长度和已有loadFat的表项检查；块链循环检查仍留给getChain。
+ *
+ * [阅读提示] 重点区分“不存在时创建”与“存在时校验加载”，失败不能互相回退。
+ * 测试虚盘先放在被忽略的构建目录，测试时不需要自己改main或移动私有接口。
+ */
+bool DiskManager::openDisk(const string &path) {
+    if (path.empty()) {
+        lastError="path must not be empty";
+        return false;
+    }
+    if (diskFile.is_open()) {
+        lastError="disk already open";
+        return false;
+    }
+    error_code ec;
+    bool exists=filesystem::exists(path,ec);
+    if (ec) {
+        lastError="path query fails: "+ec.message();
+        return false;
+    }
+    if (!exists) {
+        return createDisk(path);
+    }
+
+    bool regularFile=filesystem::is_regular_file(path,ec);
+    if (ec) {
+        lastError="file type query fails: "+ec.message();
+        return false;
+    }
+    if (!regularFile) {
+        lastError="path is not a regular file";
+        return false;
+    }
+    diskFile.clear();
+    diskFile.open(path,ios::in|ios::out|ios::binary);
+    if (!diskFile) {
+        lastError="cannot open disk file";
+        return false;
+    }
+
+    diskFile.seekg(0,ios::end);
+    streampos fileSize=diskFile.tellg();
+    if (!diskFile || fileSize==streampos(-1)) {
+        lastError="cannot read disk file size";
+        diskFile.close();
+        return false;
+    }
+    int totalBytes=blockCount*2+blockCount*BLOCK_SIZE;
+    if (fileSize!=streampos(totalBytes)) {
+        lastError="disk file size mismatch";
+        diskFile.close();
+        return false;
+    }
+
+    if (!loadFat()) {
+        diskFile.close();
+        return false;
+    }
+    lastError="";
+    return true;
+}
+
+/* [第四轮：按块读写数据区]
+ * 前面已经能新建、打开虚盘；现在要能读出或写入其中“指定的一整块”。
+ * 本轮只写readBlock和writeBlock，不改main，不实现目录命令或分配算法。
+ *
+ * [讲解：参数里的块号不是整个文件的字节偏移]
+ * 文件布局：[blockCount*2字节FAT][0号数据块][1号数据块]……
+ * 某数据块的起始偏移 = blockCount*2 + blockNo*BLOCK_SIZE。
+ * 沿用讲义8块案例：0号块从16开始，1号块从1040开始，7号块从7184开始。
+ * 默认64块：0号块从128开始。不能省略前面的FAT长度，否则会覆盖分配表。
+ * 注意：先检查块号合法，再计算偏移，避免对负数或极大值先做乘法。
+ *
+ * [职责边界]
+ * - 使用已打开的成员diskFile；不接收路径，不重新open，不新建或关闭文件。
+ * - 块号有效范围为0到blockCount-1，根目录0号块也允许读写。
+ * - 这是原始块读写，不根据fat[blockNo]是否空闲来拒绝操作。
+ *   后面分配、清零和目录保存都会复用它；哪些块可用于某个文件由上层决定。
+ * - 不改变fat，不调用saveFat；这里只处理数据区的一块原始字节。
+ * - 失败设置lastError；成功清空旧错误。不要在方法内部打印提示。
+ * - 操作前clear旧流状态，再seek定位；失败后保留流打开，便于下次重试。
+ */
+
+/* [任务1] bool DiskManager::readBlock(int blockNo, vector<char>& buffer)
+ * [参数与结果]
+ * blockNo是要读的数据块号；buffer是输出参数，可以由本方法改变大小和内容。
+ * true：buffer恰好包含这一块的1024字节；false：buffer必须为空，不能留下旧内容或半块数据。
+ *
+ * [建议步骤]
+ * 1. 先清空buffer，再检查成员流已打开、块号在范围内；任何失败都设置错误并返回false。
+ * 2. 清除流的旧错误状态，用seekg定位到上述“块起始偏移”，检查定位是否成功。
+ * 3. 给vector准备BLOCK_SIZE个元素后，再用data()接收read读取的字节。
+ *    resize会增加元素数量；reserve只准备容量，不增加元素，不能用来代替resize。
+ * 4. read之后检查gcount是否恰好等于BLOCK_SIZE，并检查流状态。
+ *    不足一整块也算失败，需要再次清空buffer；不能把末尾的半块当成成功。
+ * 5. 完整读取才清空lastError并返回true；流仍然打开，fat与文件都不变。
+ *
+ * [复用你已写过的知识]
+ * 与loadFat类似地定位、读取和检查，但这里读的是数据区，不做FAT解码。
+ * read的长度是BLOCK_SIZE，不是sizeof(BLOCK_SIZE)，也不是sizeof(buffer)。
+ *
+ * [待你实现] 在这段注释下面补本方法定义；先完成读取，再做写入。
+ */
+bool DiskManager::readBlock(int blockNo, vector<char> &buffer) {
+    buffer.clear();
+    if (!diskFile.is_open()) {
+        lastError="disk is not opened";
+        return false;
+    }
+    if (!(blockNo>=0 && blockNo<blockCount)) {
+        lastError="block out of range";
+        return false;
+    }
+    int loc = blockCount * 2 + blockNo * BLOCK_SIZE;
+    diskFile.clear();
+    diskFile.seekg(loc,ios::beg);
+    if (!diskFile) {
+        lastError="cannot seek disk file";
+        return false;
+    }
+
+    buffer.resize(BLOCK_SIZE);
+    diskFile.read(buffer.data(),BLOCK_SIZE);
+    if (!diskFile) {
+        lastError="cannot read disk file";
+        buffer.clear();
+        return false;
+    }
+    if (diskFile.gcount()!=BLOCK_SIZE) {
+        lastError="disk file size mismatch";
+        buffer.clear();
+        return false;
+    }
+
+    lastError="";
+    return true;
+}
+
+/* [任务2] bool DiskManager::writeBlock(int blockNo, const vector<char>& buffer)
+ * [参数与结果]
+ * buffer是只读输入参数，必须已有恰好1024个字节；本方法不能resize、清空或修改它。
+ * true表示定位、整块write和flush全部成功；任何一步失败都返回false并设置错误。
+ *
+ * [建议步骤]
+ * 1. 检查流已打开、块号合法、buffer.size()恰好等于BLOCK_SIZE。
+ *    所有参数检查都放在写入前；长度不对就拒绝，不补0、不截断、不自动跨块写入。
+ *    长度比较注意size_t与int类型，可沿用saveFat中的显式类型转换。
+ * 2. 清除旧流状态，用seekp定位到该数据块起始处，检查定位结果。
+ * 3. 用buffer.data()写BLOCK_SIZE个字节，检查write结果，再flush并检查结果。
+ * 4. 全部成功才清空lastError、返回true；不关闭流，不修改输入buffer和fat。
+ *
+ * [讲解：get位置与put位置]
+ * 读取前seekg，写入前seekp。每次显式定位，不假设上次操作结束的位置正好可用。
+ * 这里写原始字节，不能用<<或把buffer当成以'\0'结尾的字符串。
+ * 参数错误可以保证不写文件；实际写入中途出错却可能已经写了一部分，不能声称自动回滚。
+ *
+ * [待你实现] 在这段注释下面补本方法定义；这轮不要继续实现其他方法。
+ * 完成后我会测试：首/尾块、二进制字节往返、非法块号、错误长度、短读清空、
+ * 失败后重试、读写交替，以及FAT区域和其他数据块是否始终保持不变。
+ */
+bool DiskManager::writeBlock(int blockNo, const vector<char> &buffer) {
+    if (!diskFile.is_open()) {
+        lastError="disk is not opened";
+        return false;
+    }
+    if (!(blockNo>=0 && blockNo<blockCount)) {
+        lastError="block out of range";
+        return false;
+    }
+
+    if (buffer.size()!=BLOCK_SIZE) {
+        lastError="buffer size must be 1024";
+        return false;
+    }
+    diskFile.clear();
+    int loc = blockCount * 2 + blockNo * BLOCK_SIZE;
+    diskFile.seekp(loc,ios::beg);
+    if (!diskFile) {
+        lastError="cannot seek disk file";
+        return false;
+    }
+    diskFile.write(buffer.data(),BLOCK_SIZE);
+    /* [讲解：写入与flush后的合并检查]
+     * 你现在把检查放在flush之后，仍能发现write或flush留下的错误状态，
+     * 因为flush不会清除write已经置上的failbit/badbit；本轮只读流写入测试也能正确拒绝。
+     * 若想区分“write失败”和“flush失败”，可以分别检查，但这是错误提示的细化，
+     * 不是本次短读输出未清空的原因，不必为此重写整个方法。
+     */
+    diskFile.flush();
+    if (!diskFile) {
+        lastError="cannot write disk file";
+        return false;
+    }
+
+    lastError="";
+    return true;
 }
