@@ -13,4 +13,7 @@ add_executable(os main.cpp
         process.cpp
         bitmap.h
         bitmap.cpp
+        fcb.h
+        disk.h
+        file_system.h
 )
