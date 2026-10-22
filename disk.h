@@ -51,7 +51,9 @@ public:
     // 参数错误不写文件；实际I/O中途失败可能已部分写入，不保证回滚。
     bool writeBlock(int blockNo,const vector<char>& buffer);
 
-    // 从整文件偏移开始，只读显示原始字节；到文件末尾时缩短显示长度。
+    // 讲义info：从整文件偏移开始，只读显示偏移、十六进制字节和可打印ASCII。
+    // byteOffset须在文件内，byteCount须为正；到末尾时缩短显示长度，每行最多16字节。
+    // 不修改文件/FAT、不关闭流，不遗留cout格式设置；失败记录lastError。
     bool showInfo(int byteOffset,int byteCount=256);
 
     // count须为正；失败firstBlock=-1，空间不足不留下部分分配。
@@ -72,7 +74,8 @@ public:
     // 额外辅助显示，与讲义的info原始字节查看不同。
     void showFat() const;
 
-    // bool方法失败时记录原因，成功时清除旧错误。
+    // 只读返回成员lastError的const引用，不清除错误，不打印，不返回局部变量。
+    // 最近一次bool操作失败时记录原因，成功时清除旧错误。
     const string& getLastError() const;
 };
 

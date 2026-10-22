@@ -8,7 +8,10 @@
 #include <fstream>
 #include <filesystem>
 #include <system_error>
-// 当前没有输入输出操作，<iostream>暂时用不到；不要依赖其他头文件间接提供异常类型。
+#include <algorithm>
+#include <iomanip>
+#include <sstream>
+// showInfo使用iostream输出、iomanip排版；显式包含所需头文件，不依赖间接包含。
 using namespace std;
 
 DiskManager::DiskManager(int blockCount) {
@@ -532,6 +535,143 @@ bool DiskManager::writeBlock(int blockNo, const vector<char> &buffer) {
         return false;
     }
 
+    lastError="";
+    return true;
+}
+
+/* [第五轮：错误信息读取与讲义info]
+ * 已完成的readBlock/writeBlock只操作数据块；本轮开始查看整个虚盘的原始字节。
+ * info来自讲义外存方案的第（6）项建议和图4-7，不是新构思的额外命令。
+ * 本轮不改main、不接入命令解析、不实现showFat或块分配；先单独完成并验收接口。
+ */
+
+/* [任务1] const string& DiskManager::getLastError() const
+ * [目标] 让调用者读取这个对象保存的最近一次错误，不再只能在测试中访问私有成员。
+
+ */
+const string &DiskManager::getLastError() const {
+    return lastError;
+}
+
+/* [任务2] bool DiskManager::showInfo(int byteOffset, int byteCount)
+ * [讲解：查看的是整个虚盘文件，不是某个数据块]
+ * 沿用讲义info 0：从文件偏移0显示最多256字节，FAT也包含在里面。
+ * 8块案例：前16字节是FAT，随后才是0号数据块，所以不要再给byteOffset加FAT长度。
+ * 默认64块：前128字节是FAT，info 0会显示这些FAT字节和根目录块的前128字节。
+ * 本方法不能仅调用readBlock，因为后者跳过了FAT，且只接受整块读取。
+ * byteCount=256的默认值已写在disk.h声明中，方法定义不要重复写默认值。
+ *
+ * [参数与失败处理]
+ * - 必须已经打开虚盘，byteOffset非负、严格小于文件长度，byteCount必须大于0。
+ * - 先检查再计算；不要先算byteOffset+byteCount，两个极大int相加可能溢出。
+ * - 本方法只读，不修改fat或文件，不关闭流；失败记录lastError，成功清空旧错误。
+ * - I/O读取失败就返回false，不把半段内容当成功，不在这里直接打印业务错误提示。
+ *
+ * [建议分成两段：先读取，再排版]
+ * 1. 检查打开状态、偏移非负和显示长度为正；clear旧流状态。
+ * 2. 与openDisk类似，用seekg到文件末尾、tellg取得实际文件长度，检查流与位置是否有效。
+ *    tellg返回的是位置类型，可用streamoff表示字节长度；不要未经检查就缩成int。
+ * 3. 确认偏移在文件内，再求“剩余字节数=文件长度-byteOffset”。
+ *    实际读取量取byteCount与剩余字节数中较小者，这样靠近末尾能正常缩短。
+ *    若用std::min，需<algorithm>且两侧数值类型统一，注意int与streamoff的区别。
+ * 4. seekg到byteOffset，检查定位；准备相应长度的vector<char>，read后检查流和gcount。
+ *    所需字节完整读到后才输出，避免先显示一部分，随后才发现读取失败。
+ * 5. 按下方格式逐行输出；全部完成后清空lastError，返回true。
+ *
+ * [沿用图4-7的三栏样式，明确本项目的排版约定]
+ * 每行最多16个字节：左侧8位补0的十进制绝对偏移，中间大写两位十六进制，右侧ASCII。
+ * 假设从偏移0读到FF FF 00 00，右侧对应....；从偏移16读到41 20 42，右侧对应A B。
+ * 若byteOffset是17，第一行偏移就显示00000017，不擅自向下对齐到16。
+ * 末行不足16字节时，中间缺少的字节位置用空格补齐，让ASCII栏对齐；不要补造00字节。
+ * ASCII只显示0x20至0x7E，其余显示点；中文UTF-8字节也按原始值查看，不在此解码。
+ *
+ * [讲解：十六进制输出的常见陷阱]
+ * - 可在本文件显式包含<iomanip>，使用setw/setfill、dec/hex、uppercase等控制格式。
+ * - char先转unsigned char再转整数输出，否则可能直接输出字符，或把高位字节显示成负数。
+ * - 左侧每行都用十进制偏移；不要让上一行的hex影响下一行的偏移。
+ * - setw只影响紧接着的一次输出，每个字节都要考虑宽度；十六进制列用右对齐和补0。
+ * - hex、uppercase、对齐方式、fill等会持续影响流；如果直接设置cout，先保存原flags、fill、width，
+ *   输出结束后恢复。先完成全部读取检查，再改输出格式，便于避免失败路径漏恢复。
+ *   也可在局部ostringstream中排版（需<sstream>），最后输出时仍注意cout原有的width：
+ *   用<<输出字符串会消费它，可保存恢复；或用不消费width的cout.write输出已排好的文本。
+ */
+bool DiskManager::showInfo(int byteOffset, int byteCount) {
+    if (!diskFile.is_open()) {
+        lastError="disk is not opened";
+        return false;
+    }
+    if (byteOffset<0) {
+        lastError="byte offset must not be negative";
+        return false;
+    }
+    if (byteCount<=0) {
+        lastError="byte count must be positive";
+        return false;
+    }
+
+    // [讲解] tellg得到的是文件内位置；streamoff用于表示这个字节长度，避免缩成int。
+    diskFile.clear();
+    diskFile.seekg(0,ios::end);
+    streamoff fileSize=diskFile.tellg();
+    if (!diskFile || fileSize<0) {
+        lastError="cannot read disk file size";
+        return false;
+    }
+    if (byteOffset>=fileSize) {
+        lastError="byte offset out of range";
+        return false;
+    }
+    // [讲解] 先减出剩余量，再取较小值；不计算可能溢出的byteOffset+byteCount。
+    streamoff remaining=fileSize-byteOffset;
+    streamsize readCount=min<streamoff>(byteCount,remaining);
+    vector<char> buffer(static_cast<size_t>(readCount));
+    diskFile.seekg(byteOffset,ios::beg);
+    if (!diskFile) {
+        lastError="cannot seek disk file";
+        return false;
+    }
+    diskFile.read(buffer.data(),readCount);
+    if (!diskFile || diskFile.gcount()!=readCount) {
+        lastError="cannot read disk info";
+        return false;
+    }
+
+    // [讲解] 所需字节完整读到后才开始排版。所有hex、补0和对齐设置只作用于局部流。
+    ostringstream output;
+    output<<right<<uppercase;
+    for (size_t row=0;row<buffer.size();row+=16) {
+        // 左侧仍是十进制的“整文件绝对偏移”，每行都重新切回dec。
+        output<<dec<<setfill('0')<<setw(8)
+              <<(static_cast<streamoff>(byteOffset)+static_cast<streamoff>(row))<<"  ";
+        output<<hex;
+        for (size_t column=0;column<16;column++) {
+            if (row+column<buffer.size()) {
+                // char先去掉符号，再转整数，才能得到80、FF而不是字符或负数。
+                unsigned char value=static_cast<unsigned char>(buffer[row+column]);
+                output<<setw(2)<<static_cast<unsigned int>(value)<<' ';
+            } else {
+                output<<"   "; // 缺少一个字节就留三个空格，不伪造00，右侧ASCII保持对齐。
+            }
+        }
+        output<<"  ";
+        for (size_t column=0;column<16 && row+column<buffer.size();column++) {
+            unsigned char value=static_cast<unsigned char>(buffer[row+column]);
+            if (value>=0x20 && value<=0x7E) {
+                output<<static_cast<char>(value);
+            } else {
+                output<<'.';
+            }
+        }
+        output<<'\n';
+    }
+
+    // [讲解] write原样输出排好的文本，不使用或消耗cout原有的宽度和数字格式。
+    string text=output.str();
+    cout.write(text.data(),static_cast<streamsize>(text.size()));
+    if (!cout) {
+        lastError="cannot display disk info";
+        return false;
+    }
     lastError="";
     return true;
 }
