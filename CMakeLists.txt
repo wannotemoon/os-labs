@@ -16,4 +16,5 @@ add_executable(os main.cpp
         fcb.h
         disk.h
         file_system.h
+        disk.cpp
 )
