@@ -23,7 +23,13 @@ private:
 
     // 仅由openDisk在确认目标不存在后调用，建立FAT和数据区。
     bool createDisk(const string& path);
+
+    // 从文件偏移0读取blockCount*2字节，按小端解码并校验。
+    // 全部成功才更新成员fat；读取或校验失败保留原fat，不修改磁盘。
     bool loadFat();
+
+    // 将成员fat按小端编码写入文件开头，只覆盖FAT区域并flush。
+    // 未打开、缓存长度不符、定位或写入失败均返回false并记录lastError。
     bool saveFat();
 
 public:
