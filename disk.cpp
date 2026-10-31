@@ -675,3 +675,288 @@ bool DiskManager::showInfo(int byteOffset, int byteCount) {
     lastError="";
     return true;
 }
+
+/* [第六轮：FAT块链查询与分配]
+ * 前面已经能读写块、查看原始字节；现在开始决定“哪些块属于同一个文件”。
+ * 本轮先做getChain，再做allocateBlocks，不实现freeChain、extendChain或目录命令。
+ *
+ * [沿用讲义8块案例，先只看FAT变化]
+ * 新盘只有0号根块占用；分配1块给test的存储阶段会选到1号块，FAT[1]=FFFF。
+ * 再给2000字节的a.c分配2块，会选到2、3号块，FAT[2]=3、FAT[3]=FFFF。
+ * 此时getChain(2, blocks)应输出{2,3}；FFFF是链尾标记，不能拿65535继续索引fat。
+ * 这些调用只模拟讲义中的块分配阶段，还没有写test/a.c的FCB，不等于MD/MK命令已完成。
+ *
+ * [明确职责]
+ * - getChain只查询成员fat缓存，与getFreeBlockCount类似，不要求先打开文件。
+ *   构造后查询到的根链只是待创建的缓存状态，不说明电脑上已存在虚盘。
+ * - allocateBlocks必须已打开虚盘；只更新FAT的占用/连接关系，不读写数据块内容。
+ * - 新目录的数据块初始化留给后续FileSystem创建目录时处理，届时不能把旧目录项当新内容。
+ * - 普通空文件不占块；以后FileSystem对0字节文件直接保留firstBlock=-1，不调用allocateBlocks(0)。
+ * - 不使用实验二的页表、页框或Bitmap；空闲与否只看本实验fat的EMPTY_BLOCK。
+ */
+
+/* [任务1] bool DiskManager::getChain(int firstBlock, vector<int>& blocks)
+ * [参数与结果]
+ * firstBlock是链首，blocks为输出参数，保存按顺序走过的块号。
+ * firstBlock=-1：合法空链，返回true、输出为空并清空旧错误；其他负数非法。
+ * firstBlock=0：可以查询根目录链；根目录不能删除的限制属于以后的freeChain，不是这里。
+ * 非空链成功时至少有一个块；失败必须清空输出，不能返回走到一半的链。
+ *
+ * [建议步骤]
+ * 1. 清空blocks，处理-1空链及非法链首；每次访问fat[current]前确认current在范围内。
+ * 2. 准备临时链数组和大小为blockCount的访问标记，记录哪些块已经访问过。
+ * 3. 沿FAT前进：重复访问表示循环；fat[current]==EMPTY_BLOCK表示链落入空闲块，均失败。
+ *    先确认当前块已占用且未访问，再把它加入临时链，并标记已访问。
+ * 4. 表项等于LAST_BLOCK时正常结束；否则它应是1至blockCount-1之间的后继块号。
+ *    后继若指向空闲块，会在下一轮检查到；越界或非法标记立即拒绝。
+ * 5. 整条链全部合法才交给blocks，清空lastError、返回true；失败只设置lastError。
+ *
+ * [容易漏的情况]
+ * - 2->2是自环；2->3->2是多块循环，都不能一直while到程序卡住。
+ * - FAT[2]=3但FAT[3]=EMPTY_BLOCK，不是合法的两块链。
+ * - 0xFFFF是终止标记，0x0000是空闲标记；两者都不是普通后继块号。
+ * - 临时链只在成功时交付，能像loadFat那样避免失败路径留下半成品输出。
+ * - 不调用loadFat/saveFat，不移动或clear文件流，不修复FAT，只检查这条链的合法性。
+ */
+bool DiskManager::getChain(int firstBlock, vector<int> &blocks) {
+    blocks.clear();
+    if (firstBlock==-1) {
+        lastError="";
+        return true;
+    }
+    if (firstBlock<0 || firstBlock>=blockCount) {
+        lastError="first block out of range";
+        return false;
+    }
+    if (fat.size()!=static_cast<size_t>(blockCount)) {
+        lastError="FAT size mismatch";
+        return false;
+    }
+
+    // [讲解] 先存在临时chain中，只有整条链合法才交给调用者，失败不会留下半条输出。
+    vector<int> chain;
+    vector<bool> visited(blockCount,false);
+    int current=firstBlock;
+    while (true) {
+        // 每次使用块号作下标前都检查范围，不用非法块号访问fat或visited。
+        if (current<0 || current>=blockCount) {
+            lastError="block out of range";
+            return false;
+        }
+        if (visited[current]) {
+            lastError="block chain cycle detected";
+            return false;
+        }
+        uint16_t next=fat[current];
+        if (next==EMPTY_BLOCK) {
+            lastError="block chain reaches a free block";
+            return false;
+        }
+        visited[current]=true;
+        chain.push_back(current);
+
+        // [讲解] 先判断FFFF链尾，再判断普通后继范围；FFFF不能继续当块号访问。
+        if (next==LAST_BLOCK) {
+            blocks.swap(chain);
+            lastError="";
+            return true;
+        }
+        if (next<1 || next>=blockCount) {
+            lastError="next block out of range";
+            return false;
+        }
+        current=next;
+    }
+}
+
+/* [任务2] bool DiskManager::allocateBlocks(int count, int& firstBlock)
+ * [参数与结果]
+ * count表示需要几个数据块，不是文件字节数；firstBlock为输出链首。
+ * 所有失败都应使firstBlock=-1；只有FAT保存成功，才能输出选出的首块并返回true。
+ * 0号块永远保留；普通分配从1号块起，按块号从小到大挑选空闲块，不要求连续。
+ *
+ * [建议步骤]
+ * 1. 先把firstBlock设为-1，检查虚盘已打开、count>0；非法请求不修改任何FAT表项。
+ * 2. 先收集足够数量的空闲块号，暂时不改fat；空间不足就失败，文件和缓存都应不变。
+ *    扫描最多到blockCount-1，不能按用户的巨大count无限循环或直接分配count大小的数组。
+ * 3. 找齐后备份原fat，再用实际选出的块号连接它们，最后一个表项设为LAST_BLOCK。
+ *    例如选到{1,3,6}，应连成1->3->6->FFFF，不能假定下一块总是当前块号+1。
+ * 4. 调用saveFat持久化新表；失败时恢复旧fat缓存，保留saveFat记录的错误并返回false。
+ * 5. saveFat成功后才给firstBlock赋首块号，清空lastError，返回true。
+ *
+ * [边界与I/O说明]
+ * - 不填写FCB、不清零数据块、不修改未选中的FAT表项，也不关闭成员流。
+ * - count=1只有一个LAST_BLOCK；恰好用完剩余空间应成功，再申请则应失败。
+ * - 空间不足在写入前检查，能保证没有部分分配；真正saveFat中途失败可能已经改了部分磁盘字节，
+ *   恢复缓存不等于磁盘文件已回滚，不要用一次可能再次失败的saveFat去掩盖原来的错误。
+ * - 后面getChain(firstBlock, blocks)可以核对本次连接顺序，getFreeBlockCount应减少count。
+ */
+bool DiskManager::allocateBlocks(int count, int &firstBlock) {
+    firstBlock=-1;
+    if (!diskFile.is_open()) {
+        lastError="disk is not opened";
+        return false;
+    }
+    if (count<=0) {
+        lastError="block count must be positive";
+        return false;
+    }
+    if (fat.size()!=static_cast<size_t>(blockCount)) {
+        lastError="FAT size mismatch";
+        return false;
+    }
+
+    // [讲解] 第一遍只收集候选块，不改fat；即使只找到一部分，也可以安全拒绝整个请求。
+    vector<int> selected;
+    for (int block=1;block<blockCount && selected.size()<static_cast<size_t>(count);block++) {
+        if (fat[block]==EMPTY_BLOCK) {
+            selected.push_back(block);
+        }
+    }
+    if (selected.size()!=static_cast<size_t>(count)) {
+        lastError="not enough free blocks";
+        return false;
+    }
+
+    vector<uint16_t> oldFat=fat;
+    for (size_t index=0;index<selected.size();index++) {
+        if (index+1<selected.size()) {
+            fat[selected[index]]=static_cast<uint16_t>(selected[index+1]);
+        } else {
+            fat[selected[index]]=LAST_BLOCK;
+        }
+    }
+    if (!saveFat()) {
+        fat.swap(oldFat);
+        return false;
+    }
+    firstBlock=selected.front();
+    lastError="";
+    return true;
+}
+
+/* [第七轮：块链回收与扩展]
+ * getChain负责“整条链是否有效”，下面两个方法先复用它校验，再修改FAT。
+ * 仍不修改数据区，不操作FCB，不接入目录命令；新目录块初始化留给FileSystem。
+ */
+
+/* [方法1：freeChain]
+ * 回收不是只把链首置0，而是将整条链的所有表项都改成EMPTY_BLOCK。
+ * 沿用讲义：a.c占2、3号块，释放后FAT[2]和FAT[3]都应为0，其他文件不受影响。
+ * 根链可以查询、可以扩展，但不能回收，保护范围也包括根目录后来追加的块。
+ */
+bool DiskManager::freeChain(int firstBlock) {
+    if (firstBlock==-1) {
+        lastError="";
+        return true;
+    }
+    if (!diskFile.is_open()) {
+        lastError="disk is not opened";
+        return false;
+    }
+    if (firstBlock==ROOT_BLOCK) {
+        lastError="cannot free root directory chain";
+        return false;
+    }
+
+    vector<int> blocks;
+    if (!getChain(firstBlock,blocks)) {
+        return false;
+    }
+    // [讲解] 不只拦截firstBlock==0：若根链为0->5->6，freeChain(5)也必须拒绝。
+    // 根链本身若已损坏，就不能可靠确认哪些块需要保护，此时同样不做任何回收。
+    vector<int> rootBlocks;
+    if (!getChain(ROOT_BLOCK,rootBlocks)) {
+        return false;
+    }
+    for (int block : blocks) {
+        if (find(rootBlocks.begin(),rootBlocks.end(),block)!=rootBlocks.end()) {
+            lastError="cannot free blocks in root directory chain";
+            return false;
+        }
+    }
+
+    // 整条链校验完成后再修改，避免走到中间发现循环或空闲块，却已经释放了一部分。
+    vector<uint16_t> oldFat=fat;
+    for (int block : blocks) {
+        fat[block]=EMPTY_BLOCK;
+    }
+    if (!saveFat()) {
+        fat.swap(oldFat);
+        return false;
+    }
+    lastError="";
+    return true;
+}
+
+/* [方法2：extendChain]
+ * 保留原链，在原来的链尾后面追加count个空闲块，链首不变。
+ * 例如原链1->3->FFFF，选到5、7号块，应变成1->3->5->7->FFFF。
+ * 与allocateBlocks一样只更新FAT，不清零新块，后续目录初始化由FileSystem负责。
+ */
+bool DiskManager::extendChain(int firstBlock, int count) {
+    if (!diskFile.is_open()) {
+        lastError="disk is not opened";
+        return false;
+    }
+    if (count<=0) {
+        lastError="block count must be positive";
+        return false;
+    }
+    vector<int> blocks;
+    if (!getChain(firstBlock,blocks)) {
+        return false;
+    }
+    if (blocks.empty()) {
+        lastError="cannot extend an empty chain";
+        return false;
+    }
+
+    // [讲解] 先找齐，空间不足时原链尾仍然是FFFF，没有留下“半次扩展”。
+    vector<int> selected;
+    for (int block=1;block<blockCount && selected.size()<static_cast<size_t>(count);block++) {
+        if (fat[block]==EMPTY_BLOCK) {
+            selected.push_back(block);
+        }
+    }
+    if (selected.size()!=static_cast<size_t>(count)) {
+        lastError="not enough free blocks";
+        return false;
+    }
+
+    // [讲解] 不先调用allocateBlocks再接链：它会先保存一张独立的新链，
+    // 若接链时再次保存失败，可能留下无主块。这里先连接完整的新FAT，只保存一次。
+    vector<uint16_t> oldFat=fat;
+    fat[blocks.back()]=static_cast<uint16_t>(selected.front());
+    for (size_t index=0;index<selected.size();index++) {
+        if (index+1<selected.size()) {
+            fat[selected[index]]=static_cast<uint16_t>(selected[index+1]);
+        } else {
+            fat[selected[index]]=LAST_BLOCK;
+        }
+    }
+    if (!saveFat()) {
+        fat.swap(oldFat);
+        return false;
+    }
+    lastError="";
+    return true;
+}
+
+void DiskManager::showFat() const {
+    // 辅助查看的是FAT缓存，不是讲义info的文件原始字节；不改变错误或输出格式状态。
+    ostringstream output;
+    for (size_t index=0;index<fat.size();index++) {
+        output<<index<<": ";
+        if (fat[index]==EMPTY_BLOCK) {
+            output<<"FREE";
+        } else if (fat[index]==LAST_BLOCK) {
+            output<<"LAST";
+        } else {
+            output<<fat[index];
+        }
+        output<<'\n';
+    }
+    string text=output.str();
+    cout.write(text.data(),static_cast<streamsize>(text.size()));
+}

@@ -10,6 +10,7 @@
 #endif
 
 #include "process.h"
+#include "file_system_shell.h"
 
 using namespace std;
 
@@ -48,6 +49,7 @@ int main() {
             cout<<"9. 访问当前进程的逻辑地址"<<endl;
             cout<<"10. 查看进程页表"<<endl;
             cout<<"11. 查看进程访问统计"<<endl;
+            cout<<"12. 文件与磁盘管理（实验三）"<<endl;
             cout<<"0. 退出"<<endl;
             cout<<"请选择：";
 
@@ -172,6 +174,12 @@ int main() {
                 if (!manager.showStatistics(pid)) {
                     cout<<"进程不存在"<<endl;
                 }
+                break;
+
+            case 12:
+                // 数字菜单使用>>，命令入口使用getline；先消耗本行结尾，避免误读空路径。
+                cin.ignore(numeric_limits<streamsize>::max(),'\n');
+                runFileSystem();
                 break;
 
             case 0:

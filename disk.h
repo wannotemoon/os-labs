@@ -56,16 +56,24 @@ public:
     // 不修改文件/FAT、不关闭流，不遗留cout格式设置；失败记录lastError。
     bool showInfo(int byteOffset,int byteCount=256);
 
-    // count须为正；失败firstBlock=-1，空间不足不留下部分分配。
+    // 已打开时分配count个块（count须为正），从1号起按块号递增选空闲块，不要求连续。
+    // 保存FAT成功才输出链首；失败firstBlock=-1，空间不足时FAT和文件不变。
+    // 本方法只更新FAT，不初始化数据区；I/O失败恢复缓存，不承诺回滚文件的部分写入。
     bool allocateBlocks(int count,int& firstBlock);
 
-    // 输出完整块链；-1表示空链。失败清空blocks并记录原因。
+    // 只查FAT缓存，不读写文件；未打开时也可查询，但不代表实体虚盘已经存在。
+    // -1表示空链，0可查询根目录链；校验越界、空闲块和循环，成功输出整条链。
+    // 失败清空blocks并记录原因，不修改FAT或文件流状态。
     bool getChain(int firstBlock,vector<int>& blocks);
 
-    // 目录扩展预留：向合法非空链追加count个块，空间不足保持原链。
+    // 已打开时向合法非空链追加count个块（count须为正），允许扩展根目录链。
+    // 先找齐空闲块，再一次保存整个新FAT；空间不足不改原链，不修改数据区。
+    // I/O失败恢复缓存，不承诺回滚文件的部分写入。
     bool extendChain(int firstBlock,int count);
 
-    // 回收整条合法链；空链(-1)成功，不允许回收根目录链。
+    // 空链(-1)直接成功；非空链须已打开，校验整条链后再回收并保存FAT。
+    // 不允许回收根目录链中的任意块（包括扩展块）；不清零数据区。
+    // I/O失败恢复缓存，不承诺回滚文件的部分写入。
     bool freeChain(int firstBlock);
 
     // 只统计FAT缓存中值为EMPTY_BLOCK的表项；不会创建或读写文件。

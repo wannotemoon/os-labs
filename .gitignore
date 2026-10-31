@@ -12,3 +12,6 @@
 *.obj
 *.pdb
 *.ilk
+
+# Lab3 virtual disks in the workspace root; build-directory samples are ignored above
+/*.disk
