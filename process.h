@@ -8,6 +8,14 @@ using namespace std;
 #include "pcb_queue.h"
 #include "memory.h"
 
+// lab4：CPU调度策略，与实验二用于页面置换的FIFO是不同概念。
+// 使用SchedulingAlgorithm::FCFS/SJF/RR，避免把算法编号和进程状态混用。
+enum class SchedulingAlgorithm {
+    FCFS,
+    SJF,
+    RR
+};
+
 class ProcessManager {
 private:
     PCB* running;
@@ -26,6 +34,15 @@ private:
     int nextPid;
 
     void dispatch();
+
+    // 将pending队头中arrivalTime<=currentTime的全部任务依次移入ready，状态改为READY。
+    // 只搬运已有节点，不调度、不分配/释放资源、不改时钟或其他时间字段。
+    void moveArrivedProcesses();
+
+    // CPU空闲时选择运行者：FCFS/RR取ready队头，SJF取服务时间最短者，成功改为RUNNING。
+    // 已有running、ready为空或算法无效时返回false且状态不变；不在此推进执行时间。
+    bool dispatchScheduled(SchedulingAlgorithm algorithm);
+
     // 清理所有进程：pending/ready/blocked/running先回收资源再删除，finished只删除。
     // 清理后重置模拟时间和开始标志，不重置nextPid。
     void clearProcesses();

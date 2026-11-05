@@ -21,6 +21,39 @@ void ProcessManager::dispatch() {
     }
 }
 
+/* [lab4 第三轮：任务1，请你实现moveArrivedProcesses]
+ * 方法定义：void ProcessManager::moveArrivedProcesses()
+ * 无参数；读取成员currentTime和pending，返回void。空队列或尚无人到达时直接结束。
+ */
+void ProcessManager::moveArrivedProcesses() {
+    while (!pending.empty() && pending.front()->arrivalTime<=currentTime) {
+        PCB * pcb = pending.pop();
+        pcb->state = ProcessState::READY;
+        ready.push(pcb);
+    }
+}
+
+/* [lab4 第三轮：任务2，请你实现dispatchScheduled]
+ * 方法定义：bool ProcessManager::dispatchScheduled(SchedulingAlgorithm algorithm)
+ * algorithm是CPU调度策略；返回true表示这次确实从ready选出一个运行者。
+ */
+bool ProcessManager::dispatchScheduled(SchedulingAlgorithm algorithm) {
+    if (running!=nullptr || ready.empty()) {
+        return false;
+    }
+    if (algorithm==SchedulingAlgorithm::FCFS || algorithm==SchedulingAlgorithm::RR) {
+        PCB * pcb = ready.pop();
+        running=pcb;
+    }else if (algorithm==SchedulingAlgorithm::SJF) {
+        PCB * pcb = ready.popShortest();
+        running=pcb;
+    }else {
+        return false;
+    }
+    running->state = ProcessState::RUNNING;
+    return true;
+}
+
 /* [lab4 第二轮：任务1，扩展已有clearProcesses]
  * 先补这个方法，再写下面的createScheduledProcess，避免退出时遗漏新队列里的PCB。
  * 原running、ready、blocked的清理保留；在后面补pending和finished。
@@ -85,10 +118,6 @@ bool ProcessManager::createProcess(const string &name,int sizeBytes,int resident
  * bool ProcessManager::createScheduledProcess(const string& name,int sizeBytes,
  *         long long arrivalTime,long long burstTime,int residentPages)
  * 默认参数只写在头文件声明里，不要在这里重复写=-1。
- *
- * [参数] sizeBytes和residentPages继续交给已有MemoryManager分配逻辑；
- * arrivalTime是入就绪队列的模拟时刻，burstTime是总服务时间，不是内存大小。
- * 返回true表示本次任务已准备成功；返回false不改变已有任务，也不消耗PID。
  */
 bool ProcessManager::createScheduledProcess(const string &name, int sizeBytes,
     long long arrivalTime, long long burstTime, int residentPages) {
