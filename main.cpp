@@ -12,6 +12,7 @@
 #include "process.h"
 #include "file_system_shell.h"
 #include "scheduling_shell.h"
+#include "banker_shell.h"
 
 using namespace std;
 
@@ -52,6 +53,7 @@ int main() {
             cout<<"11. 查看进程访问统计"<<endl;
             cout<<"12. 文件与磁盘管理（实验三）"<<endl;
             cout<<"13. 进程调度（实验四）"<<endl;
+            cout<<"14. 银行家算法（实验四扩展）"<<endl;
             cout<<"0. 退出"<<endl;
             cout<<"请选择：";
 
@@ -188,6 +190,11 @@ int main() {
                 // 主菜单用>>，实验四用getline，先跳过算法入口这一行的结尾。
                 cin.ignore(numeric_limits<streamsize>::max(),'\n');
                 runSchedulingMenu();
+                break;
+
+            case 14:
+                cin.ignore(numeric_limits<streamsize>::max(),'\n');
+                runBankerMenu();
                 break;
 
             case 0:
