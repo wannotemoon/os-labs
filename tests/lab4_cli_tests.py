@@ -5,6 +5,7 @@ import random
 import re
 import subprocess
 import sys
+import unicodedata
 
 getcontext().prec = 70
 executable = Path(sys.argv[1]).resolve()
@@ -41,7 +42,7 @@ def summaries(output):
     result = []
     for text in output.split("-------- 调度统计（按完成顺序） --------")[1:]:
         rows = []
-        for match in re.finditer(r"^(\d+)\t([^\t\n]+)\t(\d+)\t(\d+)\t(\d+)\t(\d+)\t([\d.eE+-]+)$", text, re.M):
+        for match in re.finditer(r"^(\d+)[ \t]+(\S+)[ \t]+(\d+)[ \t]+(\d+)[ \t]+(\d+)[ \t]+(\d+)[ \t]+([\d.eE+-]+)$", text, re.M):
             pid, name, arrival, burst, finish, turnaround, weighted = match.groups()
             rows.append((int(pid), name, int(arrival), int(burst), int(finish), int(turnaround), Decimal(weighted)))
         count = re.search(r"已完成进程数：(\d+)", text)
@@ -79,6 +80,29 @@ check(len(stats) == 3 and output.count("本批调度完成") == 3, "three algori
 for summary, finish in zip(stats, [{1: 3, 2: 4}, {1: 3, 2: 4}, {1: 4, 2: 3}]):
     verify(summary, jobs, finish)
 check("程序结束" in output, "submenu returns to main menu")
+
+# 按终端显示列而非UTF-8字节检查对齐；覆盖中文、长名称和19位时间。
+alignment_jobs = [("A", 1024, 0, 2, 1), ("中文进程", 1024, 1, 3, 1),
+                  ("LongProcessName_123456789", 1024, 0, 1, 1), ("Éclair", 1024, maximum - 1, 1, 1)]
+aligned = run([13, *batch(1, alignment_jobs), 0, 0])
+verify(summaries(aligned)[0], alignment_jobs, {1: 2, 2: 6, 3: 3, 4: maximum})
+table = aligned.split("-------- 调度统计（按完成顺序） --------")[1].split("已完成进程数：")[0]
+table_lines = [line for line in table.splitlines() if line.strip()]
+
+
+def terminal_width(text):
+    return sum(0 if unicodedata.combining(char) else 2 if unicodedata.east_asian_width(char) in "WF" else 1
+               for char in text)
+
+
+positions = None
+for line in table_lines:
+    check("\t" not in line, "table padding uses spaces instead of tab stops")
+    starts = [terminal_width(line[:match.start()]) for match in re.finditer(r"\S+", line)]
+    check(len(starts) == 7, "all seven columns remain distinct")
+    if positions is None:
+        positions = starts
+    check(starts == positions, "headers and data start at identical terminal columns")
 
 # 非法整数、记录字段、资源参数都能在当前题目重输；失败不消费PID。
 output = run([

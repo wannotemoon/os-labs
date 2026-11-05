@@ -3,9 +3,37 @@
 #include <limits>
 #include <algorithm>
 #include <iomanip>
+#include <array>
+#include <sstream>
 using namespace std;
 
 #include "process.h"
+
+namespace {
+// UTF-8字节数不是屏幕列数：常见中文/全角字符占两格，ASCII占一格。
+size_t consoleWidth(const string& text) {
+    size_t width=0;
+    for (size_t index=0;index<text.size();) {
+        const auto first=static_cast<unsigned char>(text[index]);
+        unsigned int code=first;
+        size_t length=1;
+        if ((first&0xe0)==0xc0) { code=first&0x1f; length=2; }
+        else if ((first&0xf0)==0xe0) { code=first&0x0f; length=3; }
+        else if ((first&0xf8)==0xf0) { code=first&0x07; length=4; }
+        for (size_t offset=1;offset<length && index+offset<text.size();offset++) {
+            code=(code<<6)|(static_cast<unsigned char>(text[index+offset])&0x3f);
+        }
+        index+=length;
+        if (code>=0x0300 && code<=0x036f) continue; // 拉丁字母后的常见组合重音不另占格。
+        const bool wide=(code>=0x1100 && code<=0x115f) || (code>=0x2e80 && code<=0xa4cf)
+                     || (code>=0xac00 && code<=0xd7a3) || (code>=0xf900 && code<=0xfaff)
+                     || (code>=0xfe10 && code<=0xfe6f) || (code>=0xff01 && code<=0xff60)
+                     || (code>=0xffe0 && code<=0xffe6) || (code>=0x20000 && code<=0x3fffd);
+        width+=wide ? 2 : 1;
+    }
+    return width;
+}
+}
 
 ProcessManager::ProcessManager(int memorySizeBytes,int swapSizeBytes,int pageSizeBytes)
     : memory(memorySizeBytes,swapSizeBytes,pageSizeBytes) {
@@ -248,7 +276,6 @@ bool ProcessManager::runScheduling(SchedulingAlgorithm algorithm, long long time
 void ProcessManager::showSchedulingStatistics() const {
     cout<<"-------- 调度统计（按完成顺序） --------"<<endl;
     if (finished.empty()) {
-        // 没有完成者就没有可用的分母；不把空批次或全部失败的结果显示为平均0。
         cout<<"暂无已完成进程，无法计算平均值"<<endl;
         return;
     }
@@ -256,29 +283,40 @@ void ProcessManager::showSchedulingStatistics() const {
         cout<<"当前还有未完成进程，以下只统计已完成进程"<<endl;
     }
 
-    // 周转量由已有时间推导，不新增PCB字段；finish和arrival均非负且finish>=arrival。
-    // 累加使用long double，避免多个合法的long long周转量相加后超出整数上界。
     long double totalTurnaround=0;
     long double totalWeighted=0;
     const auto oldFlags=cout.flags();
     const auto oldPrecision=cout.precision();
     cout<<fixed<<setprecision(3);
-    cout<<"PID\t名称\t到达时间\t服务时间\t完成时间\t周转时间\t带权周转时间"<<endl;
+    vector<array<string,7>> table{{"PID","名称","到达时间","服务时间","完成时间","周转时间","带权周转时间"}};
     for (const PCB* pcb=finished.front();pcb!=nullptr;pcb=pcb->next) {
         const long long turnaround=pcb->finishTime-pcb->arrivalTime;
-        // 先转浮点再除，4/3才能得到1.333...，而不是整数除法得到1。
         const long double weighted=static_cast<long double>(turnaround)/pcb->burstTime;
         totalTurnaround+=turnaround;
         totalWeighted+=weighted;
-        cout<<pcb->pid<<'\t'<<pcb->name<<'\t'<<pcb->arrivalTime<<'\t'<<pcb->burstTime
-            <<'\t'<<pcb->finishTime<<'\t'<<turnaround<<'\t'<<weighted<<endl;
+        ostringstream value;
+        value<<fixed<<setprecision(3)<<weighted;
+        table.push_back({to_string(pcb->pid),pcb->name,to_string(pcb->arrivalTime),to_string(pcb->burstTime),
+                         to_string(pcb->finishTime),to_string(turnaround),value.str()});
+    }
+    // 先找每列最宽的单元格，再补空格；避免Tab跳格造成中文表头与数字错位。
+    array<size_t,7> widths{};
+    for (const auto& row : table) {
+        for (size_t column=0;column<widths.size();column++) {
+            widths[column]=max(widths[column],consoleWidth(row[column]));
+        }
+    }
+    for (const auto& row : table) {
+        for (size_t column=0;column<widths.size();column++) {
+            cout<<row[column];
+            if (column+1<widths.size()) cout<<string(widths[column]-consoleWidth(row[column])+2,' ');
+        }
+        cout<<endl;
     }
     const int count=finished.size();
     cout<<"已完成进程数："<<count<<endl;
     cout<<"平均周转时间："<<totalTurnaround/count<<endl;
-    // 平均带权周转是“各进程带权周转之和/个数”，不是总周转量除以总服务量。
     cout<<"平均带权周转时间："<<totalWeighted/count<<endl;
-    // cout是全局输出流，恢复格式，防止后面的分页缺页率等输出也被固定成三位小数。
     cout.flags(oldFlags);
     cout.precision(oldPrecision);
 }
