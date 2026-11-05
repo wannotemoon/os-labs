@@ -1,5 +1,6 @@
 #include <iostream>
 #include <new>
+#include <limits>
 using namespace std;
 
 #include "process.h"
@@ -52,6 +53,194 @@ bool ProcessManager::dispatchScheduled(SchedulingAlgorithm algorithm) {
     }
     running->state = ProcessState::RUNNING;
     return true;
+}
+
+/* [lab4 第四轮：任务1，请你实现advanceRunning]
+ * 方法定义：bool ProcessManager::advanceRunning(long long duration)
+ * duration是实际执行时长，不是“执行到哪个时刻”；返回true才表示时间确实推进。
+ */
+bool ProcessManager::advanceRunning(long long duration) {
+    if (running && running->state == ProcessState::RUNNING && duration>0) {
+        if (running->burstTime>0 && running->burstTime>=running->executedTime
+            && running->executedTime>=0 && running->finishTime==-1
+            && currentTime>=0 && running->arrivalTime>=0 && running->arrivalTime<=currentTime) {
+            long long left = running->burstTime - running->executedTime;
+            if (duration>left) {
+                return false;
+            }
+            if (duration>numeric_limits<long long>::max()-currentTime) {
+                return false;
+            }
+            currentTime+=duration;
+            running->executedTime+=duration;
+            return true;
+        }else {
+            return false;
+        }
+    }else {
+        return false;
+    }
+}
+
+/* [lab4 第四轮：任务2，请你实现finishRunningProcess]
+ * 方法定义：bool ProcessManager::finishRunningProcess()
+ * 没有参数；成功表示一个确实执行完的运行进程已回收资源并进入完成队列。
+ */
+bool ProcessManager::finishRunningProcess() {
+    if (running!=nullptr && running->state == ProcessState::RUNNING
+        && running->burstTime>0 && running->burstTime==running->executedTime
+        && running->finishTime==-1 && running->arrivalTime>=0
+        && running->arrivalTime<=currentTime && currentTime>=0) {
+        bool release = memory.release(*running);
+        if (release) {
+            running->finishTime=currentTime;
+            running->state=ProcessState::FINISHED;
+            finished.push(running);
+            running=nullptr;
+            return true;
+        }else {
+            return false;
+        }
+    }else {
+        return false;
+    }
+}
+
+/* [lab4 第五轮：任务1，请你实现jumpToNextArrival]
+ * 方法定义：bool ProcessManager::jumpToNextArrival()
+ * 无参数；使用成员running、ready、pending和currentTime。
+ * true表示本次时钟确实向前跳转；false表示不应跳转，所有状态保持不变。
+ */
+bool ProcessManager::jumpToNextArrival() {
+    if (running==nullptr && ready.empty() && !pending.empty() && currentTime>=0) {
+        if (pending.front()->arrivalTime>currentTime) {
+            currentTime=pending.front()->arrivalTime;
+            return true;
+        }else {
+            return false;
+        }
+    }else {
+        return false;
+    }
+}
+
+/* [lab4 第五轮：任务2，请你实现requeueRunning]
+ * 方法定义：bool ProcessManager::requeueRunning()
+ * 无参数；true表示原运行者已回到就绪队尾并腾空CPU，false时全部状态不变。
+ * [使用场景]
+ * RR本片执行完但进程尚未完成时使用；片长和本次执行量由后续主循环决定。
+ * 本方法只处理回队，不判断本片是否真的用完，也不重新选择运行者。
+ */
+bool ProcessManager::requeueRunning() {
+    if (running!=nullptr && running->state == ProcessState::RUNNING) {
+        if (running->burstTime>0 && running->burstTime>running->executedTime
+            && running->executedTime>=0 && running->finishTime==-1) {
+            if (currentTime>=0 && running->arrivalTime>=0
+                && running->arrivalTime<=currentTime) {
+                running->state=ProcessState::READY;
+                ready.push(running);
+                running=nullptr;
+                return true;
+            }else {
+                return false;
+            }
+        }else {
+            return false;
+        }
+    }else {
+        return false;
+    }
+}
+
+/* [lab4 第六轮：任务1，请你实现showSchedulingState]
+ * 方法定义：void ProcessManager::showSchedulingState() const
+ * 无参数、无返回值；const表示本方法只读取调度状态，用cout输出一次快照。
+ * 先写这个方法，再写下面的主循环，便于观察每次调用已有方法后的结果。
+ */
+void ProcessManager::showSchedulingState() const {
+    cout<<"currentTime:"<<currentTime<<endl;
+    cout<<"running:";
+    if (running==nullptr) {
+        cout<<"null"<<endl;
+    }else {
+        cout<<"pid:"<<running->pid<<" name"<<running->name
+        <<" arrivalTime:"<<running->arrivalTime
+        <<" burstTime:"<<running->burstTime
+        <<" executedTime:"<<running->executedTime
+        <<" left time"<<running->burstTime-running->executedTime<<endl;
+    }
+    cout<<"pending:";
+    pending.show();
+    cout<<"ready:";
+    ready.show();
+    cout<<"blocked:";
+    blocked.show();
+    cout<<"finished:";
+    finished.show();
+}
+
+/* [lab4 第六轮：任务2，请你实现runScheduling]
+ * 方法定义：
+ * bool ProcessManager::runScheduling(SchedulingAlgorithm algorithm,long long timeQuantum)
+ * 两个参数都要传：algorithm选择算法；timeQuantum是RR时间片，FCFS/SJF忽略它。
+ */
+bool ProcessManager::runScheduling(SchedulingAlgorithm algorithm, long long timeQuantum) {
+    if (schedulingStarted==false && currentTime==0
+        && running==nullptr && ready.empty() && !pending.empty()
+        && blocked.empty() && finished.empty()) {
+    }else {
+        return false;
+    }
+    if (algorithm==SchedulingAlgorithm::FCFS || algorithm==SchedulingAlgorithm::SJF
+        || (algorithm==SchedulingAlgorithm::RR && timeQuantum>0)) {
+        schedulingStarted=true;
+        showSchedulingState();
+        moveArrivedProcesses();
+        while (!pending.empty() || !ready.empty() || running) {
+            moveArrivedProcesses();
+            showSchedulingState();
+            if (running==nullptr && ready.empty()) {
+                if (!jumpToNextArrival()) {
+                    return false;
+                }
+                moveArrivedProcesses();
+                showSchedulingState();
+            }
+            if (running==nullptr && !ready.empty()) {
+                bool dispatch_scheduled = dispatchScheduled(algorithm);
+                if (!dispatch_scheduled) {
+                    return false;
+                }else {
+                    showSchedulingState();
+                }
+            }
+            if (algorithm==SchedulingAlgorithm::FCFS || algorithm==SchedulingAlgorithm::SJF) {
+                if (!advanceRunning(running->burstTime-running->executedTime)) {
+                    return false;
+                }
+            }else {
+                if (!advanceRunning(min(timeQuantum,running->burstTime-running->executedTime))) {
+                    return false;
+                }
+            }
+            moveArrivedProcesses();
+            showSchedulingState();
+            if (running->burstTime==running->executedTime) {
+                if (!finishRunningProcess()) {
+                    return false;
+                }
+                showSchedulingState();
+            }else if (algorithm==SchedulingAlgorithm::RR) {
+                if (!requeueRunning()) {
+                    return false;
+                }
+                showSchedulingState();
+            }
+        }
+        return true;
+    }else {
+        return false;
+    }
 }
 
 /* [lab4 第二轮：任务1，扩展已有clearProcesses]
