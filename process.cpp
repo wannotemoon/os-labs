@@ -1,6 +1,8 @@
 #include <iostream>
 #include <new>
 #include <limits>
+#include <algorithm>
+#include <iomanip>
 using namespace std;
 
 #include "process.h"
@@ -241,6 +243,44 @@ bool ProcessManager::runScheduling(SchedulingAlgorithm algorithm, long long time
     }else {
         return false;
     }
+}
+
+void ProcessManager::showSchedulingStatistics() const {
+    cout<<"-------- 调度统计（按完成顺序） --------"<<endl;
+    if (finished.empty()) {
+        // 没有完成者就没有可用的分母；不把空批次或全部失败的结果显示为平均0。
+        cout<<"暂无已完成进程，无法计算平均值"<<endl;
+        return;
+    }
+    if (running!=nullptr || !pending.empty() || !ready.empty() || !blocked.empty()) {
+        cout<<"当前还有未完成进程，以下只统计已完成进程"<<endl;
+    }
+
+    // 周转量由已有时间推导，不新增PCB字段；finish和arrival均非负且finish>=arrival。
+    // 累加使用long double，避免多个合法的long long周转量相加后超出整数上界。
+    long double totalTurnaround=0;
+    long double totalWeighted=0;
+    const auto oldFlags=cout.flags();
+    const auto oldPrecision=cout.precision();
+    cout<<fixed<<setprecision(3);
+    cout<<"PID\t名称\t到达时间\t服务时间\t完成时间\t周转时间\t带权周转时间"<<endl;
+    for (const PCB* pcb=finished.front();pcb!=nullptr;pcb=pcb->next) {
+        const long long turnaround=pcb->finishTime-pcb->arrivalTime;
+        // 先转浮点再除，4/3才能得到1.333...，而不是整数除法得到1。
+        const long double weighted=static_cast<long double>(turnaround)/pcb->burstTime;
+        totalTurnaround+=turnaround;
+        totalWeighted+=weighted;
+        cout<<pcb->pid<<'\t'<<pcb->name<<'\t'<<pcb->arrivalTime<<'\t'<<pcb->burstTime
+            <<'\t'<<pcb->finishTime<<'\t'<<turnaround<<'\t'<<weighted<<endl;
+    }
+    const int count=finished.size();
+    cout<<"已完成进程数："<<count<<endl;
+    cout<<"平均周转时间："<<totalTurnaround/count<<endl;
+    // 平均带权周转是“各进程带权周转之和/个数”，不是总周转量除以总服务量。
+    cout<<"平均带权周转时间："<<totalWeighted/count<<endl;
+    // cout是全局输出流，恢复格式，防止后面的分页缺页率等输出也被固定成三位小数。
+    cout.flags(oldFlags);
+    cout.precision(oldPrecision);
 }
 
 /* [lab4 第二轮：任务1，扩展已有clearProcesses]

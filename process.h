@@ -89,6 +89,10 @@ public:
     // 启动校验失败时状态不变；启动后的失败保留已有进度和资源，返回false，不自动重试。
     bool runScheduling(SchedulingAlgorithm algorithm,long long timeQuantum);
 
+    // 从finished现场计算每个进程的周转/带权周转及平均值；只读，不另外保存一份结果字段。
+    // 没有完成记录时不给平均值；中途失败时明确只统计已经完成的进程。
+    void showSchedulingStatistics() const;
+
     bool timeOut();
     bool blockProcess();
     bool wakeProcess();

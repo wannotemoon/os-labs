@@ -20,6 +20,8 @@ add_executable(os main.cpp
         file_system_shell.h
         file_system_shell.cpp
         disk.cpp
+        scheduling_shell.h
+        scheduling_shell.cpp
 )
 
 # 可重复运行的正式接口测试；所有虚盘样本生成在构建目录，不改用户的磁盘文件。
@@ -32,5 +34,7 @@ if(BUILD_TESTING)
         add_test(NAME lab3-command-line COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/lab3_cli_tests.py"
                 "$<TARGET_FILE:os>" "${CMAKE_CURRENT_BINARY_DIR}/lab3-test-data")
+        add_test(NAME lab4-command-line COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/lab4_cli_tests.py" "$<TARGET_FILE:os>")
     endif()
 endif()

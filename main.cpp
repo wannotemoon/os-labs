@@ -11,6 +11,7 @@
 
 #include "process.h"
 #include "file_system_shell.h"
+#include "scheduling_shell.h"
 
 using namespace std;
 
@@ -50,6 +51,7 @@ int main() {
             cout<<"10. 查看进程页表"<<endl;
             cout<<"11. 查看进程访问统计"<<endl;
             cout<<"12. 文件与磁盘管理（实验三）"<<endl;
+            cout<<"13. 进程调度（实验四）"<<endl;
             cout<<"0. 退出"<<endl;
             cout<<"请选择：";
 
@@ -180,6 +182,12 @@ int main() {
                 // 数字菜单使用>>，命令入口使用getline；先消耗本行结尾，避免误读空路径。
                 cin.ignore(numeric_limits<streamsize>::max(),'\n');
                 runFileSystem();
+                break;
+
+            case 13:
+                // 主菜单用>>，实验四用getline，先跳过算法入口这一行的结尾。
+                cin.ignore(numeric_limits<streamsize>::max(),'\n');
+                runSchedulingMenu();
                 break;
 
             case 0:
