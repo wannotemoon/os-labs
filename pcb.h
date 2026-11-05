@@ -13,7 +13,11 @@ using namespace std;
 enum ProcessState {
     READY,
     RUNNING,
-    BLOCKED
+    BLOCKED,
+    // lab4：尚未到达不能加入就绪队列；完成后保留PCB供时间统计。
+    // 追加在末尾，不改变原READY/RUNNING/BLOCKED的枚举值。
+    NOT_ARRIVED,
+    FINISHED
 };
 
 struct PageTableEntry {
@@ -43,6 +47,12 @@ struct PCB {
     unsigned long long accessCount=0;
     unsigned long long pageFaultCount=0;
     unsigned long long replacementCount=0;
+
+    // lab4：以下都是模拟时间，不是内存字节数，也不需要真实等待。
+    long long arrivalTime=0;
+    long long burstTime=0;     // 总共需要的CPU服务时间，调度任务须>0
+    long long executedTime=0;  // 累计已执行时间，剩余时间=burstTime-executedTime
+    long long finishTime=-1;
 
 };
 
